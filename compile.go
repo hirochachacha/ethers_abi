@@ -185,6 +185,10 @@ func (p *compiler) parseType() abi.Type {
 				typ = "int256"
 			case "uint":
 				typ = "uint256"
+			case "address":
+				if p.acceptKeyword("payable") {
+					typ = "address payable"
+				}
 			}
 		}
 
@@ -365,6 +369,8 @@ func MustCompile(ss ...string) (a abi.ABI) {
 	return a
 }
 
+var _uint8, _ = abi.NewType("uint8", "", nil)
+
 func Compile(ss ...string) (a abi.ABI, err error) {
 	p := new(compiler)
 
@@ -386,6 +392,10 @@ func Compile(ss ...string) (a abi.ABI, err error) {
 				p.types[typ.TupleRawName] = typ
 			case token.IDENT:
 				switch p.lit {
+				case "enum":
+					name := p.parseEnum()
+
+					p.types[name] = _uint8
 				case "constructor": // "constructor(string symbol, string name)",
 					a.Constructor = p.parseConstructor()
 				case "fallback": // "fallback() payable",
@@ -488,6 +498,39 @@ L:
 	p.accept(token.SEMICOLON)
 
 	return typ
+}
+
+func (p *compiler) parseEnum() string {
+	p.expectKeyword("enum")
+
+	name := p.parseIdent()
+
+	p.expect(token.LBRACE)
+
+L:
+	for {
+		switch p.tok {
+		case token.IDENT:
+			_ = p.parseIdent()
+
+			if p.accept(token.COMMA) {
+				continue L
+			}
+
+			break L
+		case token.RBRACE:
+			break L
+		default:
+			p.errorExpected(p.pos, "'IDENT' or '}'")
+			break L
+		}
+	}
+
+	p.expect(token.RBRACE)
+
+	p.accept(token.SEMICOLON)
+
+	return name
 }
 
 func (p *compiler) parseConstructor() abi.Method {
