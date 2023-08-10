@@ -24,7 +24,7 @@ type compiler struct {
 func (p *compiler) init(fset *token.FileSet, filename string, src []byte) *compiler {
 	p.file = fset.AddFile(filename, -1, len(src))
 	eh := func(pos token.Position, msg string) { p.errors.Add(pos, msg) }
-	p.scanner.Init(p.file, src, eh, 0)
+	p.scanner.Init(p.file, src, eh, 2)
 	p.next()
 	return p
 }
@@ -71,13 +71,19 @@ func (p *compiler) expect(tok token.Token) token.Pos {
 	return pos
 }
 
+func (p *compiler) accept(tok token.Token) bool {
+	if p.tok != tok {
+		return false
+	}
+	p.next()
+	return true
+}
+
 func (p *compiler) acceptKeyword(s string) bool {
 	if p.lit != s {
 		return false
 	}
-
 	p.next()
-
 	return true
 }
 
@@ -88,6 +94,17 @@ func (p *compiler) expectKeyword(s string) token.Pos {
 	}
 	if p.lit != s {
 		p.errorExpected(pos, "'"+s+"'")
+	}
+	p.next() // make progress
+	return pos
+}
+
+func (p *compiler) expectSemiOrEof() token.Pos {
+	pos := p.pos
+	switch p.tok {
+	case token.SEMICOLON, token.EOF:
+	default:
+		p.errorExpected(pos, "';' or 'EOF'")
 	}
 	p.next() // make progress
 	return pos
@@ -468,7 +485,7 @@ L:
 		p.error(p.pos, err.Error())
 	}
 
-	p.expect(token.SEMICOLON)
+	p.accept(token.SEMICOLON)
 
 	return typ
 }
@@ -490,7 +507,7 @@ func (p *compiler) parseConstructor() abi.Method {
 		outputs = p.parseParameters("func")
 	}
 
-	p.expect(token.SEMICOLON)
+	p.expectSemiOrEof()
 
 	return abi.NewMethod("", "", abi.Constructor, mutability, mutability == "view" || mutability == "pure", mutability == "payable", inputs, outputs)
 }
@@ -512,7 +529,7 @@ func (p *compiler) parseFallback() abi.Method {
 		outputs = p.parseParameters("func")
 	}
 
-	p.expect(token.SEMICOLON)
+	p.expectSemiOrEof()
 
 	return abi.NewMethod("", "", abi.Constructor, mutability, mutability == "view" || mutability == "pure", mutability == "payable", inputs, outputs)
 }
@@ -534,7 +551,7 @@ func (p *compiler) parseReceive() abi.Method {
 		outputs = p.parseParameters("func")
 	}
 
-	p.expect(token.SEMICOLON)
+	p.expectSemiOrEof()
 
 	return abi.NewMethod("", "", abi.Constructor, mutability, mutability == "view" || mutability == "pure", mutability == "payable", inputs, outputs)
 }
@@ -558,7 +575,7 @@ func (p *compiler) parseFunction() abi.Method {
 		outputs = p.parseParameters("func")
 	}
 
-	p.expect(token.SEMICOLON)
+	p.expectSemiOrEof()
 
 	return abi.NewMethod(name, name, abi.Function, mutability, mutability == "view" || mutability == "pure", mutability == "payable", inputs, outputs)
 }
@@ -572,7 +589,7 @@ func (p *compiler) parseEvent() abi.Event {
 
 	anonymous := p.acceptKeyword("anonymous")
 
-	p.expect(token.SEMICOLON)
+	p.expectSemiOrEof()
 
 	return abi.NewEvent(name, name, anonymous, inputs)
 }
@@ -583,7 +600,7 @@ func (p *compiler) parseError() abi.Error {
 	name := p.parseIdent()
 	inputs := p.parseParameters("error")
 
-	p.expect(token.SEMICOLON)
+	p.expectSemiOrEof()
 
 	return abi.NewError(name, inputs)
 }
