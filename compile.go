@@ -186,9 +186,7 @@ func (p *compiler) parseType() abi.Type {
 			case "uint":
 				typ = "uint256"
 			case "address":
-				if p.acceptKeyword("payable") {
-					typ = "address payable"
-				}
+				p.acceptKeyword("payable")
 			}
 		}
 
