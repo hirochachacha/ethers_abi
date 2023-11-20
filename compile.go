@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"go/scanner"
 	"go/token"
-	"strconv"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 )
@@ -19,7 +18,7 @@ type compiler struct {
 	tok token.Token // one token look-ahead
 	lit string      // token literal
 
-	types map[string]abi.Type
+	typeArgs map[string]abi.ArgumentMarshaling
 }
 
 func (p *compiler) init(fset *token.FileSet, filename string, src []byte) *compiler {
@@ -122,133 +121,81 @@ func (p *compiler) parseIdent() string {
 	return name
 }
 
-func (p *compiler) parseTuple() abi.Type {
+func (p *compiler) parseTuple() abi.ArgumentMarshaling {
 	args := p.parseParameters("func")
 
-	args2 := make([]abi.ArgumentMarshaling, len(args))
+	components := make([]abi.ArgumentMarshaling, len(args))
 
 	for i, arg := range args {
-		args2[i] = abi.ArgumentMarshaling{
+		components[i] = abi.ArgumentMarshaling{
 			Name:    arg.Name,
 			Type:    arg.Type.String(),
 			Indexed: arg.Indexed,
 		}
 	}
 
-	t, err := abi.NewType("tuple", "", args2)
-	if err != nil {
-		p.error(p.pos, err.Error())
-	}
-
-	return t
-}
-
-func (p *compiler) parseSliceOrArray() (size int) {
-	p.expect(token.LBRACK)
-
-	var s string
-
-	for p.tok != token.RBRACK {
-		p.next()
-
-		if p.tok == token.EOF || p.tok == token.LBRACK {
-			p.errorExpected(p.pos, "]")
-
-			return -1
-		}
-
-		s += p.tok.String()
-	}
-
-	p.next()
-
-	if len(s) == 0 {
-		return -1
-	}
-
-	size, err := strconv.Atoi(s)
-	if err != nil {
-		p.error(p.pos, err.Error())
-	}
-
-	return size
+	return abi.ArgumentMarshaling{Type: "tuple", Components: components}
 }
 
 func (p *compiler) parseType() (typ abi.Type) {
+	var typeArg abi.ArgumentMarshaling
+
 	switch p.tok {
 	case token.LPAREN:
-		typ = p.parseTuple()
+		typeArg = p.parseTuple()
 	case token.IDENT:
-		ident := p.parseIdent()
+		typeName := p.parseIdent()
 
-		if ident == "tuple" {
-			typ = p.parseTuple()
-
-			break
-		}
-
-		if ntyp, ok := p.types[ident]; ok {
-			typ = ntyp
+		if targ, ok := p.typeArgs[typeName]; ok {
+			typeArg = targ
 
 			break
 		}
 
-		switch ident {
+		if typeName == "tuple" {
+			typeArg = p.parseTuple()
+
+			break
+		}
+
+		switch typeName {
 		case "int":
-			ident = "int256"
+			typeName = "int256"
 		case "uint":
-			ident = "uint256"
+			typeName = "uint256"
 		case "address":
 			p.acceptKeyword("payable")
 		}
 
-		for p.tok == token.LBRACK {
-			ident += p.tok.String()
-
-			for p.tok != token.RBRACK {
-				p.next()
-
-				if p.tok == token.EOF || p.tok == token.LBRACK {
-					p.errorExpected(p.pos, "]")
-
-					return abi.Type{}
-				}
-
-				ident += p.tok.String()
-			}
-
-			p.next()
-		}
-
-		t, err := abi.NewType(ident, "", nil)
-		if err != nil {
-			p.error(p.pos, err.Error())
-		}
-
-		return t
+		typeArg.Type = typeName
 	default:
 		p.errorExpected(p.pos, "'(' or 'IDENT'")
 	}
 
 	for p.tok == token.LBRACK {
-		etyp := typ
-		size := p.parseSliceOrArray()
+		typeArg.Type += p.tok.String()
 
-		if size < 0 {
-			typ = abi.Type{
-				T:    abi.SliceTy,
-				Elem: &etyp,
+		for p.tok != token.RBRACK {
+			p.next()
+
+			if p.tok == token.EOF || p.tok == token.LBRACK {
+				p.errorExpected(p.pos, "]")
+
+				return abi.Type{}
 			}
-		} else {
-			typ = abi.Type{
-				T:    abi.ArrayTy,
-				Elem: &etyp,
-				Size: size,
-			}
+
+			typeArg.Type += p.tok.String()
 		}
+
+		p.next()
 	}
 
-	return typ
+	t, err := abi.NewType(typeArg.Type, typeArg.InternalType, typeArg.Components)
+	if err != nil {
+		p.error(p.pos, err.Error())
+	}
+
+	return t
 }
 
 func (p *compiler) parseParameters(paramType string) (args abi.Arguments) {
@@ -397,12 +344,10 @@ func MustCompile(ss ...string) (a abi.ABI) {
 	return a
 }
 
-var _uint8, _ = abi.NewType("uint8", "", nil)
-
 func Compile(ss ...string) (a abi.ABI, err error) {
 	p := new(compiler)
 
-	p.types = make(map[string]abi.Type, 0)
+	p.typeArgs = make(map[string]abi.ArgumentMarshaling, 0)
 
 	fset := token.NewFileSet() // positions are relative to fset
 
@@ -415,15 +360,15 @@ func Compile(ss ...string) (a abi.ABI, err error) {
 			case token.EOF:
 				break L
 			case token.STRUCT:
-				typ := p.parseStruct()
+				typeArg := p.parseStruct()
 
-				p.types[typ.TupleRawName] = typ
+				p.typeArgs[typeArg.Name] = typeArg
 			case token.IDENT:
 				switch p.lit {
 				case "enum":
-					name := p.parseEnum()
+					typeArg := p.parseEnum()
 
-					p.types[name] = _uint8
+					p.typeArgs[typeArg.Name] = typeArg
 				case "constructor": // "constructor(string symbol, string name)",
 					a.Constructor = p.parseConstructor()
 				case "fallback": // "fallback() payable",
@@ -486,7 +431,7 @@ func Compile(ss ...string) (a abi.ABI, err error) {
 	return a, nil
 }
 
-func (p *compiler) parseStruct() abi.Type {
+func (p *compiler) parseStruct() abi.ArgumentMarshaling {
 	p.expect(token.STRUCT)
 
 	name := p.parseIdent()
@@ -518,17 +463,19 @@ L:
 
 	p.expect(token.RBRACE)
 
-	typ, err := abi.NewType("tuple", fmt.Sprintf("struct %s", name), components)
-	if err != nil {
-		p.error(p.pos, err.Error())
+	typeArg := abi.ArgumentMarshaling{
+		Name:         name,
+		Type:         "tuple",
+		InternalType: fmt.Sprintf("struct %s", name),
+		Components:   components,
 	}
 
 	p.accept(token.SEMICOLON)
 
-	return typ
+	return typeArg
 }
 
-func (p *compiler) parseEnum() string {
+func (p *compiler) parseEnum() abi.ArgumentMarshaling {
 	p.expectKeyword("enum")
 
 	name := p.parseIdent()
@@ -556,9 +503,11 @@ L:
 
 	p.expect(token.RBRACE)
 
+	typeArg := abi.ArgumentMarshaling{Name: name, Type: "uint8", InternalType: fmt.Sprintf("enum %s", name)}
+
 	p.accept(token.SEMICOLON)
 
-	return name
+	return typeArg
 }
 
 func (p *compiler) parseConstructor() abi.Method {
