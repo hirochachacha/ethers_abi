@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/scanner"
 	"go/token"
+	"strconv"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 )
@@ -134,28 +135,7 @@ func (p *compiler) parseTuple() abi.Type {
 		}
 	}
 
-	typ := "tuple"
-
-	for p.tok == token.LBRACK {
-		typ += p.tok.String()
-
-		for p.tok != token.RBRACK {
-
-			p.next()
-
-			if p.tok == token.EOF {
-				p.errorExpected(p.pos, "]")
-
-				return abi.Type{}
-			}
-
-			typ += p.tok.String()
-		}
-
-		p.next()
-	}
-
-	t, err := abi.NewType(typ, "", args2)
+	t, err := abi.NewType("tuple", "", args2)
 	if err != nil {
 		p.error(p.pos, err.Error())
 	}
@@ -163,52 +143,84 @@ func (p *compiler) parseTuple() abi.Type {
 	return t
 }
 
-func (p *compiler) parseType() abi.Type {
-	switch p.tok {
-	case token.LPAREN:
-		return p.parseTuple()
-	case token.IDENT:
-		typ := p.parseIdent()
-		if typ == "tuple" {
-			return p.parseTuple()
+func (p *compiler) parseSliceOrArray() (size int) {
+	p.expect(token.LBRACK)
+
+	var s string
+
+	for p.tok != token.RBRACK {
+		p.next()
+
+		if p.tok == token.EOF || p.tok == token.LBRACK {
+			p.errorExpected(p.pos, "]")
+
+			return -1
 		}
 
-		if ntyp, ok := p.types[typ]; ok {
-			if p.tok != token.LBRACK {
-				return ntyp
-			}
+		s += p.tok.String()
+	}
 
-			typ = ntyp.String()
-		} else {
-			switch typ {
-			case "int":
-				typ = "int256"
-			case "uint":
-				typ = "uint256"
-			case "address":
-				p.acceptKeyword("payable")
-			}
+	p.next()
+
+	if len(s) == 0 {
+		return -1
+	}
+
+	size, err := strconv.Atoi(s)
+	if err != nil {
+		p.error(p.pos, err.Error())
+	}
+
+	return size
+}
+
+func (p *compiler) parseType() (typ abi.Type) {
+	switch p.tok {
+	case token.LPAREN:
+		typ = p.parseTuple()
+	case token.IDENT:
+		ident := p.parseIdent()
+
+		if ident == "tuple" {
+			typ = p.parseTuple()
+
+			break
+		}
+
+		if ntyp, ok := p.types[ident]; ok {
+			typ = ntyp
+
+			break
+		}
+
+		switch ident {
+		case "int":
+			ident = "int256"
+		case "uint":
+			ident = "uint256"
+		case "address":
+			p.acceptKeyword("payable")
 		}
 
 		for p.tok == token.LBRACK {
-			typ += p.tok.String()
+			ident += p.tok.String()
 
 			for p.tok != token.RBRACK {
 				p.next()
 
-				if p.tok == token.EOF {
+				if p.tok == token.EOF || p.tok == token.LBRACK {
 					p.errorExpected(p.pos, "]")
 
 					return abi.Type{}
 				}
 
-				typ += p.tok.String()
+				ident += p.tok.String()
 			}
 
 			p.next()
 		}
 
-		t, err := abi.NewType(typ, "", nil)
+		t, err := abi.NewType(ident, "", nil)
 		if err != nil {
 			p.error(p.pos, err.Error())
 		}
@@ -218,7 +230,25 @@ func (p *compiler) parseType() abi.Type {
 		p.errorExpected(p.pos, "'(' or 'IDENT'")
 	}
 
-	return abi.Type{}
+	for p.tok == token.LBRACK {
+		etyp := typ
+		size := p.parseSliceOrArray()
+
+		if size < 0 {
+			typ = abi.Type{
+				T:    abi.SliceTy,
+				Elem: &etyp,
+			}
+		} else {
+			typ = abi.Type{
+				T:    abi.ArrayTy,
+				Elem: &etyp,
+				Size: size,
+			}
+		}
+	}
+
+	return typ
 }
 
 func (p *compiler) parseParameters(paramType string) (args abi.Arguments) {
